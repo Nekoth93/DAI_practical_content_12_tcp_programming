@@ -1,15 +1,35 @@
 package ch.heigvd.dai.commands;
 
+import java.io.*;
+import java.net.ServerSocket;
+import java.net.Socket;
+import java.nio.charset.StandardCharsets;
+import java.util.Random;
 import java.util.concurrent.Callable;
 import picocli.CommandLine;
 
-import java.io.*;
-import java.nio.charset.StandardCharsets;
-
-import java.util.Random;
-
 @CommandLine.Command(name = "server", description = "Start the server part of the network game.")
 public class Server implements Callable<Integer> {
+
+  public enum Message {
+    HIGHER,
+    LOWER,
+    CORRECT,
+    OK,
+    ERROR,
+  }
+
+  // Upper bound for the random number
+  private static final int UPPER_BOUND = 100;
+
+  // Lower bound for the random number
+  private static final int LOWER_BOUND = 0;
+
+  // End of line character
+  public static String END_OF_LINE = "\n";
+
+  // The number to guess
+  private int numberToGuess;
 
   @CommandLine.Option(
       names = {"-p", "--port"},
@@ -25,32 +45,34 @@ public class Server implements Callable<Integer> {
 
   @Override
   public Integer call() {
-    public static String END_OF_LINE = "\n";
-
     try (ServerSocket serverSocket = new ServerSocket(port)) {
       System.out.println("[Server] listening on port " + port);
 
-
-      Random random = new Random();
-      int randomNumber = random.nextInt(100 - 0 + 1) + min;
-
-
       while (!serverSocket.isClosed()) {
         try(Socket socket = serverSocket.accept();
-            Reader reader = new InputStreamReader(socket.getInputStream(), StandardCharset.UTF_8);
+            Reader reader = new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8);
             BufferedReader in = new BufferedReader(reader);
-            Writer writer = new OutputStreamWriter(socket.getOutputStream(), StandardCharset.UTF_8);
+            Writer writer = new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8);
             BufferedWriter out = new BufferedWriter(writer)) {
 
           System.out.println("[Server] New client connected from "
                   + socket.getInetAddress().getHostAddress()
                   + ":"
                   + socket.getPort());
+
+          // Generate random number
+          generateRandomNumber();
+
+          // Set game in progress
+          boolean gameInProgress = true;
+
+          System.out.println("[Server] The number to guess is: " + numberToGuess);
+
           while (!socket.isClosed()) {
             // Lecture de la réponse du client
             String clientRequest = in.readLine();
 
-            // Si clientRequest est null, le client à été déconnecté
+            // Si clientRequest est null, le client a été déconnecté
             // Le serveur peut alors fermer la connection et attendre un nouveau client
             if (clientRequest == null) {
               socket.close();
@@ -58,19 +80,14 @@ public class Server implements Callable<Integer> {
             }
 
             // Divise l'entrée de l'utilisateur pour traiter la commande
-            if(clientRequest.length() > 1) {
-              String[] clientRequestParts = clientRequest.split(" ", 2);
-              port = clientRequestParts[0];
 
-            } else {
-              guessValue = clientRequestParts[1];
-            }
+            String[] clientRequestParts = clientRequest.split(" ", 2);
 
-            ClientCommand command = null;
+            Client.Message message = null;
             try {
-              command = ClientCommand.valueOf(clientRequestParts[0]);
+              message = Client.Message.valueOf(clientRequestParts[0]);
             } catch (Exception e) {
-              // Ne fait rien
+              // Ne fais rien
             }
 
             // Préparation de la réponse
@@ -78,52 +95,67 @@ public class Server implements Callable<Integer> {
 
             // Gère la requête du client
 
-            if(Object.equals(value, guessValue)) {
-              response = "Good guess!";
-              socket.close();
-            } else {
-              response = "Try again!";
-            }
+            switch (message) {
+              case GUESS -> {
+                if (clientRequestParts.length < 2) {
+                  response = Message.ERROR + "2: the guess is not a number." + END_OF_LINE;
+                  break;
+                }
 
-//            switch (command) {
-//              case HELLO -> {
-//                if (clientRequestParts.length < 2) {
-//                  System.out.println(
-//                          "[Server] " + command + " command received without <name> parameter. Replying with "
-//                                  + ServerCommand.INVALID
-//                                  + ".");
-//                  response = ServerCommand.INVALID + "Missing <name> parameter. Please try again.";
-//
-//                  break;
-//                }
-//                String name = clientRequestParts[1];
-//
-//                Systeme.out.println("[Server] Received HELLO command with name: " + name);
-//                System.out.println("[Server] Replying with Hi command.");
-//
-//                response = ServerCommand.HI + "Hi, " + name + "!";
-//              }
-//              case null, default -> {
-//                System.out.println(
-//                        "[Server] Unknown command: sent by client, reply with "
-//                                + ServerCommand.INVALID
-//                                + ".");
-//                response = ServerCommand.INVALID + "Unknown command. Please try again.";
-//              }
+                try {
+                  int number = Integer.parseInt(clientRequestParts[1]);
+
+                  if(number < LOWER_BOUND || number > UPPER_BOUND) {
+                    response = Message.ERROR + " 1: the number is not between the bounds." + END_OF_LINE;
+                  } else if (number > numberToGuess) {
+                    response = Message.HIGHER + END_OF_LINE;
+                  } else if (number < numberToGuess) {
+                    response = Message.LOWER + END_OF_LINE;
+                  } else {
+                    response = Message.CORRECT + END_OF_LINE;
+                  }
+
+                  // Set game in progress
+                  gameInProgress = false;
+                } catch (NumberFormatException e) {
+                  response = Message.ERROR + " 2: the guess is not a number." + END_OF_LINE;
+                }
+              }
+              case RESTART -> {
+                if(gameInProgress) {
+                  response = Message.ERROR + " 1: a game is already in session" + END_OF_LINE;
+                } else {
+                  generateRandomNumber();
+
+                  System.out.println("[Server] The number to guess is: " + numberToGuess);
+                  response = Message.OK + END_OF_LINE;
+                }
+              }
+              case null, default -> {
+                response = Message.ERROR + " -1: invalid message." + END_OF_LINE;
+              }
             }
 
             // Envois la réponse au client
-            out.write(response + END_OF_LINE);
+            out.write(response);
             out.flush();
           }
 
           System.out.println("[Server] Closing connection");
         } catch (IOException e) {
           System.out.println("[Server] IO execption" + e);
+          return 1;
         }
       }
     } catch (IOException e) {
       System.out.println("[Server] IO execption" + e);
+      return 1;
     }
+      return 0;
+  }
+
+  private void generateRandomNumber() {
+    Random random = new Random();
+    numberToGuess = random.nextInt(UPPER_BOUND - LOWER_BOUND) + LOWER_BOUND;
   }
 }
