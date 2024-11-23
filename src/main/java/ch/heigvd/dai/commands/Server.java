@@ -37,12 +37,6 @@ public class Server implements Callable<Integer> {
       defaultValue = "6433")
   protected int port;
 
-  @CommandLine.Parameters(
-          paramLabel = "<guessedValue>",
-          description = "Value guessed by user"
-  )
-  private int guessValue;
-
   @Override
   public Integer call() {
     try (ServerSocket serverSocket = new ServerSocket(port)) {
